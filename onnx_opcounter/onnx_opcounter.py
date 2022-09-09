@@ -78,9 +78,12 @@ def calculate_macs(model: onnx.ModelProto) -> int:
     import collections
     counter = collections.defaultdict(lambda: collections.defaultdict(lambda: 0))
     for node in onnx_nodes:
-        input_shapes = [tuple(shapes[i]) for i in node.input]
-        output_shapes = [tuple(shapes[o]) for o in node.output]
-        in_out_shapes = tuple(input_shapes + [None] + output_shapes)
-        counter[node.op_type][in_out_shapes] += 1
+        try:
+            input_shapes = [tuple(shapes[i]) for i in node.input]
+            output_shapes = [tuple(shapes[o]) for o in node.output]
+            in_out_shapes = tuple(input_shapes + [None] + output_shapes)
+            counter[node.op_type][in_out_shapes] += 1
+        except:
+            print(f"could not deal with {node.name}")
 
     return counter
