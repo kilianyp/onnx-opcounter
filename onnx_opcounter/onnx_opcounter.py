@@ -1,8 +1,11 @@
+import logging
+import collections
+from onnx import shape_inference
 import onnx
-import onnxruntime as rt
-import numpy as np
 from onnx import numpy_helper
-import ipdb
+
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_params(model: onnx.ModelProto) -> int:
@@ -18,34 +21,6 @@ def calculate_params(model: onnx.ModelProto) -> int:
     return params
 
 
-def onnx_node_attributes_to_dict(args):
-    """
-    Parse ONNX attributes to Python dictionary
-    :param args: ONNX attributes object
-    :return: Python dictionary
-    """
-
-    def onnx_attribute_to_dict(onnx_attr):
-        """
-        Parse ONNX attribute
-        :param onnx_attr: ONNX attribute
-        :return: Python data type
-        """
-        if onnx_attr.HasField('t'):
-            return numpy_helper.to_array(getattr(onnx_attr, 't'))
-
-        for attr_type in ['f', 'i', 's']:
-            if onnx_attr.HasField(attr_type):
-                return getattr(onnx_attr, attr_type)
-
-        for attr_type in ['floats', 'ints', 'strings']:
-            if getattr(onnx_attr, attr_type):
-                return list(getattr(onnx_attr, attr_type))
-
-    return {arg.name: onnx_attribute_to_dict(arg) for arg in args}
-
-
-from onnx import shape_inference
 def to_list(shape_proto):
     shape = []
     for dim in shape_proto.dim:
@@ -53,9 +28,42 @@ def to_list(shape_proto):
     return shape
 
 
-def calculate_macs(model: onnx.ModelProto) -> int:
-    if len(model.graph.value_info) == 0:
-        model = shape_inference.infer_shapes(model)
+import onnxruntime as rt
+import numpy as np
+
+def calculate_macs(model: onnx.ModelProto):
+    print(1)
+    model = shape_inference.infer_shapes(model)
+
+
+    graph_weights = [w.name for w in model.graph.initializer]
+    graph_outputs = set(i.name for i in model.graph.output)
+    for node in model.graph.node:
+        if node.name in graph_outputs:
+            continue
+        intermediate_layer_value_info = onnx.helper.ValueInfoProto()
+        intermediate_layer_value_info.name = node.name
+        model.graph.output.extend([intermediate_layer_value_info])
+        graph_outputs.add(node.name)
+
+    onnx.save(model, '+all-intermediate.onnx')
+    sess = rt.InferenceSession('+all-intermediate.onnx')
+
+    # construc
+    input_sample = {}
+    type_mapping = {
+        1: np.float32,
+        7: np.int64,
+    }
+
+    for graph_input in model.graph.input:
+        if graph_input.name not in graph_weights:
+            input_sample[graph_input.name] = \
+                np.zeros([i.dim_value for i in graph_input.type.tensor_type.shape.dim],
+                         dtype=type_mapping[graph_input.type.tensor_type.elem_type])
+    output = sess.run(graph_outputs, input_sample)
+    return output
+    print(output)
 
     shapes = {}
     for v in model.graph.value_info:
@@ -75,7 +83,7 @@ def calculate_macs(model: onnx.ModelProto) -> int:
         shapes[i.name] = to_list(i.type.tensor_type.shape)
 
 
-    import collections
+
     counter = collections.defaultdict(lambda: collections.defaultdict(lambda: 0))
     for node in onnx_nodes:
         try:
