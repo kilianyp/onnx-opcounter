@@ -32,19 +32,31 @@ import onnxruntime as rt
 import numpy as np
 
 def calculate_macs(model: onnx.ModelProto):
-    print(1)
-    model = shape_inference.infer_shapes(model)
 
 
     graph_weights = [w.name for w in model.graph.initializer]
-    graph_outputs = set(i.name for i in model.graph.output)
+    graph_inputs = []
+    graph_outputs = list(i.name for i in model.graph.output)
+
+
     for node in model.graph.node:
-        if node.name in graph_outputs:
-            continue
-        intermediate_layer_value_info = onnx.helper.ValueInfoProto()
-        intermediate_layer_value_info.name = node.name
-        model.graph.output.extend([intermediate_layer_value_info])
-        graph_outputs.add(node.name)
+        for name in node.input:
+            if name in graph_inputs:
+                continue
+            intermediate_layer_value_info = onnx.helper.ValueInfoProto()
+            intermediate_layer_value_info.name = name
+            model.graph.output.extend([intermediate_layer_value_info])
+            graph_inputs.append(name)
+
+
+    for node in model.graph.node:
+        for name in node.output:
+            if name in graph_outputs:
+                continue
+            intermediate_layer_value_info = onnx.helper.ValueInfoProto()
+            intermediate_layer_value_info.name = name
+            model.graph.output.extend([intermediate_layer_value_info])
+            graph_outputs.append(name)
 
     onnx.save(model, '+all-intermediate.onnx')
     sess = rt.InferenceSession('+all-intermediate.onnx')
@@ -61,17 +73,17 @@ def calculate_macs(model: onnx.ModelProto):
             input_sample[graph_input.name] = \
                 np.zeros([i.dim_value for i in graph_input.type.tensor_type.shape.dim],
                          dtype=type_mapping[graph_input.type.tensor_type.elem_type])
-    output = sess.run(graph_outputs, input_sample)
-    return output
-    print(output)
+    inputs = sess.run(graph_inputs, input_sample)
+    outputs = sess.run(graph_outputs, input_sample)
 
-    shapes = {}
+
+    """
+    onnx_nodes = model.graph.node
+    onnx_weights = model.graph.initializer
+
     for v in model.graph.value_info:
         shapes[v.name] = to_list(v.type.tensor_type.shape)
 
-
-    onnx_nodes = model.graph.node
-    onnx_weights = model.graph.initializer
 
     for w in onnx_weights:
         shapes[w.name] = w.dims
@@ -81,16 +93,30 @@ def calculate_macs(model: onnx.ModelProto):
 
     for i in model.graph.input:
         shapes[i.name] = to_list(i.type.tensor_type.shape)
+    """
+    output_shapes = {}
+    input_shapes = {}
+
+    for name, o in zip(graph_outputs, outputs):
+        output_shapes[name] = o.shape
+
+    for name, i in zip(graph_inputs, inputs):
+        input_shapes[name] = i.shape
+
+    onnx_weights = model.graph.initializer
+    for w in onnx_weights:
+        input_shapes[w.name] = w.dims
 
 
 
     counter = collections.defaultdict(lambda: collections.defaultdict(lambda: 0))
-    for node in onnx_nodes:
+    for node in model.graph.node:
         try:
-            input_shapes = [tuple(shapes[i]) for i in node.input]
-            output_shapes = [tuple(shapes[o]) for o in node.output]
-            in_out_shapes = tuple(input_shapes + [None] + output_shapes)
+            ins = [tuple(input_shapes[i]) for i in node.input]
+            outs = [tuple(output_shapes[o]) for o in node.output]
+            in_out_shapes = tuple(ins + [None] + outs)
             counter[node.op_type][in_out_shapes] += 1
+
         except:
             print(f"could not deal with {node.name}")
 
